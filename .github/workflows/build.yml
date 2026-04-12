@@ -63,7 +63,7 @@ jobs:
       run: pip wheel . --no-deps -w wheelhouse/
 
     # 7. Upload the finished .whl file
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: pywhispercpp-win-py${{ matrix.python-version }}
         path: wheelhouse/*.whl
