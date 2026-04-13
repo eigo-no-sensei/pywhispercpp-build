@@ -1,0 +1,208 @@
+name: Build pywhispercpp Windows Wheel (OpenBLAS + OpenVINO)
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Python version'
+        required: true
+        default: '3.11'
+        type: choice
+        options: ['3.10', '3.11', '3.12', '3.13']
+      pywhispercpp_ref:
+        description: 'pywhispercpp git ref (branch/tag/commit)'
+        required: true
+        default: 'main'
+      openblas_version:
+        description: 'OpenBLAS version (from github.com/OpenMathLib/OpenBLAS/releases)'
+        required: true
+        default: '0.3.26'
+      openvino_version:
+        description: 'OpenVINO pip version (from pypi.org/project/openvino)'
+        required: true
+        default: '2024.6.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+    # ── 1. Python & Build Tools ────────────────────────────────────────────────
+    - name: Set up Python ${{ inputs.python_version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Install Python build tools
+      run: pip install --upgrade pip build wheel setuptools
+
+    # ── 2. OpenBLAS ────────────────────────────────────────────────────────────
+    - name: Download and extract OpenBLAS ${{ inputs.openblas_version }}
+      run: |
+        $ver = "${{ inputs.openblas_version }}"
+        $url = "https://github.com/OpenMathLib/OpenBLAS/releases/download/v${ver}/OpenBLAS-${ver}-x64.zip"
+        Write-Host "Downloading $url"
+        Invoke-WebRequest $url -OutFile openblas.zip -UseBasicParsing
+
+        # Verify it is actually a zip (PK magic bytes), not an HTML error page
+        $bytes = [System.IO.File]::ReadAllBytes("openblas.zip")
+        if ($bytes[0] -ne 0x50 -or $bytes[1] -ne 0x4B) {
+          Get-Content openblas.zip -Raw | Select-Object -First 500
+          Write-Error "openblas.zip is not a valid zip — URL may have changed."
+        }
+
+        Expand-Archive openblas.zip -DestinationPath openblas_raw
+
+        # Normalize: move the inner top-level folder to ./openblas
+        $inner = Get-ChildItem openblas_raw | Select-Object -First 1
+        Move-Item $inner.FullName openblas
+
+        if (-not (Test-Path "openblas\lib\libopenblas.lib")) {
+          Write-Error "libopenblas.lib not found — archive layout may have changed."
+        }
+
+        $root = (Resolve-Path "openblas").Path
+        echo "OPENBLAS_LIB=$root\lib\libopenblas.lib" >> $env:GITHUB_ENV
+        echo "OPENBLAS_INC=$root\include"              >> $env:GITHUB_ENV
+        echo "OPENBLAS_BIN=$root\bin"                  >> $env:GITHUB_ENV
+        Write-Host "OPENBLAS configured at: $root"
+
+    # ── 3. OpenVINO (via pip) ──────────────────────────────────────────────────
+    - name: Install OpenVINO ${{ inputs.openvino_version }} via pip
+      run: |
+        pip install openvino==${{ inputs.openvino_version }}
+
+        # Get the CMake directory via Intel's official API
+        $cmakePath = python -c "from openvino.utils import get_cmake_path; print(get_cmake_path())"
+        
+        if (-not $cmakePath -or -not (Test-Path $cmakePath)) {
+          # Fallback for older versions without get_cmake_path()
+          $cmakePath = python -c @"
+        import pathlib, openvino
+        for p in [
+            pathlib.Path(openvino.__file__).parent / 'cmake',
+            pathlib.Path(openvino.__file__).parent.parent / 'openvino' / 'cmake',
+        ]:
+            if p.exists(): print(p); break
+        "@
+        }
+
+        if (-not $cmakePath -or -not (Test-Path $cmakePath)) {
+          Write-Error "Cannot locate OpenVINO CMake directory."
+        }
+
+        # Locate runtime DLLs for the linker
+        $ovLibs = python -c @"
+        import pathlib, openvino
+        for p in [
+            pathlib.Path(openvino.__file__).parent / 'libs',
+            pathlib.Path(openvino.__file__).parent,
+        ]:
+            if p.exists(): print(p); break
+        "@
+
+        echo "OPENVINO_DIR=$cmakePath" >> $env:GITHUB_ENV
+        echo "$ovLibs"                >> $env:GITHUB_PATH
+        Write-Host "OpenVINO CMake: $cmakePath | Libs: $ovLibs"
+
+    # ── 4. Clone pywhispercpp ──────────────────────────────────────────────────
+    - name: Clone pywhispercpp
+      run: |
+        git clone --recurse-submodules https://github.com/absadiki/pywhispercpp.git src
+        cd src
+        git checkout ${{ inputs.pywhispercpp_ref }}
+        git submodule update --init --recursive
+        Write-Host "Checked out: $(git rev-parse HEAD)"
+
+    # ── 5. Build wheel ─────────────────────────────────────────────────────────
+    - name: Build wheel
+      working-directory: src
+      run: |
+        # Setting env vars directly in PowerShell to guarantee availability 
+        # during the --no-isolation build subprocess
+        $env:GGML_BLAS = "1"
+        $env:BLAS_LIBRARIES = "$env:OPENBLAS_LIB"
+        $env:BLAS_INCLUDE_DIRS = "$env:OPENBLAS_INC"
+        $env:WHISPER_OPENVINO = "1"
+        $env:OpenVINO_DIR = "$env:OPENVINO_DIR"
+
+        Write-Host "--- Build environment ---"
+        Write-Host "GGML_BLAS         = $env:GGML_BLAS"
+        Write-Host "BLAS_LIBRARIES    = $env:BLAS_LIBRARIES"
+        Write-Host "BLAS_INCLUDE_DIRS = $env:BLAS_INCLUDE_DIRS"
+        Write-Host "WHISPER_OPENVINO  = $env:WHISPER_OPENVINO"
+        Write-Host "OpenVINO_DIR      = $env:OpenVINO_DIR"
+        Write-Host "-------------------------"
+
+        python -m build --wheel --no-isolation --outdir dist -v
+
+        $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
+        if (-not $whl) { Write-Error "No wheel found in dist/ after build" }
+        Write-Host "Built wheel: $($whl.Name)"
+
+    # ── 6. Bundle libopenblas.dll into the wheel ───────────────────────────────
+    - name: Bundle libopenblas.dll
+      working-directory: src
+      run: |
+        $whl  = Get-ChildItem dist\*.whl | Select-Object -First 1
+        $dll  = "$env:OPENBLAS_BIN\libopenblas.dll"
+
+        if (-not (Test-Path $dll)) {
+          Write-Warning "libopenblas.dll not found at $dll — consumers will need it on PATH."
+          exit 0
+        }
+
+        $tmp = "dist\_unpack"
+        New-Item -ItemType Directory -Force $tmp | Out-Null
+        Expand-Archive $whl.FullName -DestinationPath $tmp
+        Copy-Item $dll $tmp
+        Write-Host "Injected $dll into wheel payload."
+
+        # Repack (Compress-Archive won't overwrite, so we use intermediate .zip)
+        Remove-Item $whl.FullName
+        $zipPath = $whl.FullName -replace '\.whl$','.zip'
+        Compress-Archive "$tmp\*" -DestinationPath $zipPath
+        Rename-Item $zipPath $whl.Name
+        Remove-Item $tmp -Recurse -Force
+        Write-Host "Repacked: $($whl.Name)"
+
+    # ── 7. Smoke test ──────────────────────────────────────────────────────────
+    - name: Smoke test
+      working-directory: src
+      run: |
+        $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
+        pip install $whl.FullName --force-reinstall -q
+        
+        python -c @"
+        import _pywhispercpp as pwcpp
+        info = pwcpp.whisper_print_system_info()
+        print('System info:', info)
+        if 'BLAS = 1' not in info:
+            raise SystemExit('FAIL: OpenBLAS was not linked into the build')
+        print('PASS: OpenBLAS confirmed')
+        # Note: OPENVINO shows 0 at import time without an IR model — that is expected
+        "@
+
+    # ── 8. Upload ──────────────────────────────────────────────────────────────
+    - name: Upload wheel artefact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pywhispercpp-win-py${{ inputs.python_version }}-openblas-openvino
+        path: src/dist/*.whl
+        retention-days: 30
+
+    - name: Summary
+      working-directory: src
+      run: |
+        $whl = Get-ChildItem dist\*.whl | Select-Object -First 1
+        echo "## Build Successful" >> $env:GITHUB_STEP_SUMMARY
+        echo "**Wheel:** `$($whl.Name)" >> $env:GITHUB_STEP_SUMMARY
+        echo "" >> $env:GITHUB_STEP_SUMMARY
+        echo "### Installation" >> $env:GITHUB_STEP_SUMMARY
+        echo '```bash' >> $env:GITHUB_STEP_SUMMARY
+        echo "pip install $($whl.Name)" >> $env:GITHUB_STEP_SUMMARY
+        echo "pip install openvino==${{ inputs.openvino_version }}" >> $env:GITHUB_STEP_SUMMARY
+        echo '```' >> $env:GITHUB_STEP_SUMMARY
