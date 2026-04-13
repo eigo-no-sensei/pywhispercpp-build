@@ -41,8 +41,6 @@ jobs:
       run: pip install --upgrade pip build wheel setuptools
 
     # ── 2. OpenBLAS ────────────────────────────────────────────────────────────
-    # Releases live at github.com/OpenMathLib/OpenBLAS/releases
-    # Zip layout: OpenBLAS-<ver>-x64/{bin,include,lib,...}
     - name: Download and extract OpenBLAS ${{ inputs.openblas_version }}
       run: |
         $ver = "${{ inputs.openblas_version }}"
@@ -66,19 +64,20 @@ jobs:
         Write-Host "OpenBLAS layout:"
         Get-ChildItem openblas
 
-        if (-not (Test-Path "openblas\lib\libopenblas.lib")) {
-          Write-Error "libopenblas.lib not found — archive layout may have changed."
+        # Check for the DLL (pre-built binaries only include DLL, not LIB)
+        if (-not (Test-Path "openblas\bin\libopenblas.dll")) {
+          Write-Error "libopenblas.dll not found — archive layout may have changed."
         }
 
         $root = (Resolve-Path "openblas").Path
-        echo "OPENBLAS_LIB=$root\lib\libopenblas.lib" >> $env:GITHUB_ENV
+        # Use the DLL directly as the library file (works with CMake and linker)
+        echo "OPENBLAS_LIB=$root\bin\libopenblas.dll" >> $env:GITHUB_ENV
         echo "OPENBLAS_INC=$root\include"              >> $env:GITHUB_ENV
         echo "OPENBLAS_BIN=$root\bin"                  >> $env:GITHUB_ENV
         Write-Host "OPENBLAS root: $root"
+        Write-Host "OPENBLAS_LIB set to: $root\bin\libopenblas.dll"
 
     # ── 3. OpenVINO (via pip — no archive download, no setupvars.bat) ─────────
-    # The openvino pip package ships CMake find-package files and runtime DLLs.
-    # get_cmake_path() is Intel's official API for locating them.
     - name: Install OpenVINO ${{ inputs.openvino_version }} via pip
       run: |
         pip install openvino==${{ inputs.openvino_version }}
@@ -131,12 +130,6 @@ jobs:
         Write-Host "HEAD: $(git rev-parse HEAD)"
 
     # ── 5. Build wheel ─────────────────────────────────────────────────────────
-    # pywhispercpp's setup.py reads these env vars and passes them to CMake:
-    #   GGML_BLAS=1          -> -DGGML_BLAS=ON
-    #   BLAS_LIBRARIES       -> -DBLAS_LIBRARIES=<path>
-    #   BLAS_INCLUDE_DIRS    -> -DBLAS_INCLUDE_DIRS=<path>
-    #   WHISPER_OPENVINO=1   -> -DWHISPER_OPENVINO=ON
-    #   OpenVINO_DIR         -> consumed by CMake find_package(OpenVINO)
     - name: Build wheel
       working-directory: src
       env:
@@ -163,8 +156,6 @@ jobs:
         Write-Host "Wheel: $($whl.Name)"
 
     # ── 6. Bundle libopenblas.dll into the wheel ───────────────────────────────
-    # setup.py already copies whisper.dll in; we add libopenblas.dll so the
-    # wheel is self-contained on machines without OpenBLAS on PATH.
     - name: Bundle libopenblas.dll
       working-directory: src
       run: |
@@ -172,7 +163,7 @@ jobs:
         $dll  = "$env:OPENBLAS_BIN\libopenblas.dll"
 
         if (-not (Test-Path $dll)) {
-          Write-Warning "libopenblas.dll not at $dll — consumers will need it on PATH"
+          Write-Warning "libopenblas.dll not found at $dll — consumers will need it on PATH"
           exit 0
         }
 
