@@ -14,6 +14,8 @@ Python bindings for [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with
     * [NVIDIA GPU support](#nvidia-gpu-support)
     * [CoreML support](#coreml-support)
     * [Vulkan support](#vulkan-support)
+    * [OpenBLAS support](#openblas-support)
+    * [SYCL support](#sycl-support)
 * [Quick start](#quick-start)
 * [Examples](#examples)
   * [CLI](#cli)
@@ -80,10 +82,29 @@ GGML_VULKAN=1 pip install git+https://github.com/absadiki/pywhispercpp
 
 ### OpenBLAS support
 
-If OpenBLAS is installed, you can use `GGML_BLAS=1`. The other flags ensure you're installing fresh with the correct flags, and printing output for sanity checking.
+If OpenBLAS is installed, you can use `GGML_BLAS=1` with `GGML_BLAS_VENDOR=OpenBLAS`. The other flags ensure you're installing fresh with the correct flags, and printing output for sanity checking.
 ```shell
-GGML_BLAS=1 pip install git+https://github.com/absadiki/pywhispercpp --no-cache --force-reinstall -v
+# Linux/macOS
+GGML_BLAS=1 GGML_BLAS_VENDOR=OpenBLAS pip install git+https://github.com/absadiki/pywhispercpp --no-cache --force-reinstall -v
+
+# Windows (requires OpenBLAS installed)
+GGML_BLAS=1 GGML_BLAS_VENDOR=OpenBLAS pip install .
 ```
+
+### SYCL support
+
+To build with SYCL support (Intel GPU/CPU acceleration), install Intel oneAPI toolkit and set `GGML_SYCL=1`:
+```shell
+# Windows (requires Intel oneAPI basekit)
+set GGML_SYCL=1
+pip install .
+```
+
+You can also specify additional SYCL options:
+- `GGML_SYCL_F16=1` - Use 16-bit floats for SYCL calculations
+- `GGML_SYCL_TARGET=INTEL` - Target device (default: INTEL)
+- `GGML_SYCL_GRAPH=1` - Enable graphs in SYCL backend
+- `GGML_SYCL_DNN=1` - Enable oneDNN in SYCL backend
 
 ### OpenVINO support
 
