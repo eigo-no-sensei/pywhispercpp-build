@@ -11,6 +11,19 @@
 # WHISPER_COREML_ALLOW_FALLBACK=1
 # if set, whisper.cpp will be build with coreml support which requires special models
 # It is best used with WHISPER_COREML_ALLOW_FALLBACK=1
+#
+# GGML_BLAS=1
+# GGML_BLAS_VENDOR=OpenBLAS
+# if set, whisper.cpp will be built with OpenBLAS support (Linux/Windows).
+# On Windows, you may need to install OpenBLAS and set GGML_BLAS_VENDOR=OpenBLAS
+#
+# GGML_SYCL=1
+# if set, whisper.cpp will be built with SYCL support (requires oneAPI/Intel oneDNN).
+# On Windows, install Intel oneAPI basekit and oneDNN.
+# Set GGML_SYCL_TARGET to specify target device (e.g., GPU, CPU).
+#
+# For Windows build with OpenBLAS and SYCL:
+#   GGML_BLAS=1 GGML_BLAS_VENDOR=OpenBLAS GGML_SYCL=1 pip install .
 
 
 import os
