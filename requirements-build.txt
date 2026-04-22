@@ -1,0 +1,11 @@
+numpy
+requests
+tqdm
+platformdirs
+setuptools>=42
+wheel
+ninja
+cmake>=3.12
+repairwheel
+setuptools-scm>=8
+build

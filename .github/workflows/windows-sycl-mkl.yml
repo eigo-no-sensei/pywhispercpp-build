@@ -1,0 +1,98 @@
+name: Windows build — SYCL + MKL wheel
+
+on:
+  push:
+    branches: [ main ]
+    tags: ['v*']
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build-windows-wheel:
+    runs-on: windows-2022
+    env:
+      PYTHON_VERSION: '3.10'            # adjust as needed
+      ONEAPI_VERSION: '2024.0.0'        # adjust if needed
+      WHEEL_OUTPUT_DIR: 'dist'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Visual Studio Build Tools
+        uses: microsoft/setup-msbuild@v1
+        with:
+          vs-version: '2022'
+
+      - name: Install Intel oneAPI (base + dpcpp) via winget
+        shell: powershell
+        run: |
+          # Adjust package ids if your runner image already includes parts of oneAPI.
+          winget install --id Intel.oneAPI.BaseKit --accept-package-agreements --accept-source-agreements -e || echo "oneAPI base kit already installed or unavailable"
+          winget install --id Intel.oneAPI.DPCPP --accept-package-agreements --accept-source-agreements -e || echo "dpcpp already installed or unavailable"
+          # Ensure environment variables for oneAPI are exported for the build steps
+          $oneapi_root = "C:\Program Files (x86)\Intel\oneAPI"
+          if (Test-Path $oneapi_root) {
+            Write-Output "oneAPI appears installed at $oneapi_root"
+          } else {
+            Write-Output "oneAPI not found; builds requiring SYCL may fail"
+          }
+
+      - name: Add oneAPI to PATH (if installed)
+        if: always()
+        shell: powershell
+        run: |
+          $oneapi_shims = @(
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\bin",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\bin64",
+            "C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\release"
+          )
+          foreach ($p in $oneapi_shims) {
+            if (Test-Path $p) {
+              Write-Output "Adding $p to PATH"
+              $env:PATH = "$p;$env:PATH"
+            }
+          }
+          Write-Output "PATH updated."
+
+      - name: Install Intel MKL (pip wheel for numpy+mkl or intel-openmp)
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # Prefer Intel-distributed numpy if available. Adjust to your compatibility needs.
+          python -m pip install numpy==1.26.* --prefer-binary
+          # If your build needs intel MKL explicitly:
+          # python -m pip install mkl                # optional: may not be needed if numpy already bundles MKL
+          python -m pip show numpy
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r requirements-build.txt
+
+      - name: Build wheel
+        env:
+          DIST_DIR: ${{ env.WHEEL_OUTPUT_DIR }}
+          # Enable SYCL support (Intel oneAPI DPCPP)
+          GGML_SYCL: '1'
+          GGML_SYCL_F16: '1'
+          # Enable OpenBLAS/MKL
+          GGML_BLAS: '1'
+          GGML_BLAS_VENDOR: 'OpenBLAS'
+        run: |
+          python -m pip install build
+          python -m build --wheel --outdir $DIST_DIR
+
+      - name: List produced artifacts
+        run: dir ${{ env.WHEEL_OUTPUT_DIR }}
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pywhisper-windows-sycl-mkl-${{ github.ref_name }}-${{ github.sha }}
+          path: ${{ env.WHEEL_OUTPUT_DIR }}
+          retention-days: 14
